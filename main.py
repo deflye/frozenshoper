@@ -2,6 +2,7 @@ import logging
 import asyncio
 import aiohttp
 import aiosqlite
+import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -15,6 +16,7 @@ from aiogram.client.default import DefaultBotProperties
 BOT_TOKEN = "7782237361:AAHkPxLuwyxMujNNXCVoaI4LUIBWAuVuC98"
 CRYPTO_PAY_TOKEN = "422558:AAGn5BqvTaiWcl9dVI698fq5pM1lnc3vmue"
 CRYPTO_API_URL = "https://pay.crypt.bot/api"
+DB_PATH = os.getenv("DB_PATH", "/tmp/users.db")  # путь для Scalingo
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -27,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 
 # === ИНИЦИАЛИЗАЦИЯ БД ===
 async def init_db():
-    async with aiosqlite.connect("users.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,66 +54,32 @@ def get_main_menu():
 async def categories(call: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="Kleinanzeigen", callback_data="kleinanzeigen")
-    kb.button(text="📘 Мануалы", callback_data="manuals")
+    kb.button(text="Мануалы", callback_data="manuals")
     kb.button(text="🔙 Назад", callback_data="back_to_main")
     await call.message.edit_text("Выберите категорию:", reply_markup=kb.as_markup())
 
-# === KLEINANZEIGEN ===
+# === ТОВАРЫ В Kleinanzeigen ===
 @router.callback_query(F.data == "kleinanzeigen")
-async def show_kleinanzeigen(call: types.CallbackQuery):
+async def show_item(call: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="Саморег Germany номер 7$", callback_data="buy_germany")
     kb.button(text="🔙 Назад", callback_data="all_categories")
     await call.message.edit_text("Доступные товары:", reply_markup=kb.as_markup())
 
-# === МАНУАЛЫ ===
+# === ТОВАРЫ В МАНУАЛАХ ===
 @router.callback_query(F.data == "manuals")
-async def show_manuals(call: types.CallbackQuery):
+async def show_manual(call: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
-    kb.button(text="Обход фрода Kleinanzeigen — 200$", callback_data="buy_manual")
+    kb.button(text="Купить за 200$", callback_data="buy_manual")
     kb.button(text="🔙 Назад", callback_data="all_categories")
-    await call.message.edit_text("Доступные мануалы:", reply_markup=kb.as_markup())
+    await call.message.edit_text(
+        "📃 Товар: Обход фрода Kleinanzeigen\n"
+        "💰 Цена: 200$\n"
+        "📄 Описание: Подробный мануал по обходу антифрода Kleinanzeigen.",
+        reply_markup=kb.as_markup()
+    )
 
-# === ПОКУПКА МАНУАЛА ===
-@router.callback_query(F.data == "buy_manual")
-async def buy_manual(call: types.CallbackQuery):
-    price = 200
-    unique_id = str(uuid.uuid4())[:7]
-    payload = f"{call.from_user.id}:manual:{unique_id}"
-
-    async with aiohttp.ClientSession() as session:
-        headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
-        json_data = {
-            "asset": "USDT",
-            "amount": str(price),
-            "description": f"Покупка: Обход фрода Kleinanzeigen (ID: {unique_id})",
-            "hidden_message": "Спасибо за покупку!",
-            "payload": payload
-        }
-        async with session.post(f"{CRYPTO_API_URL}/createInvoice", headers=headers, json=json_data) as resp:
-            result = await resp.json()
-
-            if "result" not in result:
-                await call.message.answer("❌ Ошибка при создании счёта.")
-                return
-
-            invoice = result['result']
-            invoice_url = invoice['pay_url']
-            invoice_id = invoice['invoice_id']
-
-            kb = InlineKeyboardBuilder()
-            kb.button(text="💳 ОПЛАТИТЬ", url=invoice_url)
-            kb.button(text="🔙 Назад", callback_data="manuals")
-            await call.message.answer(
-                f"💰 Покупка: Обход фрода Kleinanzeigen\n"
-                f"💵 Сумма: {price}$\n"
-                f"🧾 Комментарий к оплате: {unique_id}",
-                reply_markup=kb.as_markup()
-            )
-
-            asyncio.create_task(wait_and_check_payment(invoice_id, call.from_user.id, "Обход фрода Kleinanzeigen", price, 1))
-
-# === ВЫБОР КОЛ-ВА (KLEINANZEIGEN) ===
+# === ВЫБОР КОЛ-ВА ДЛЯ GERMANY ===
 @router.callback_query(F.data == "buy_germany")
 async def quantity_select(call: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
@@ -126,7 +94,7 @@ async def quantity_select(call: types.CallbackQuery):
         reply_markup=kb.as_markup()
     )
 
-# === ОПЛАТА KLEINANZEIGEN ===
+# === ОПЛАТА GERMANY ===
 @router.callback_query(F.data.startswith("pay_germany_"))
 async def pay_crypto(call: types.CallbackQuery):
     qty = int(call.data.split("_")[-1])
@@ -145,17 +113,13 @@ async def pay_crypto(call: types.CallbackQuery):
         }
         async with session.post(f"{CRYPTO_API_URL}/createInvoice", headers=headers, json=json_data) as resp:
             result = await resp.json()
-
             if "result" not in result:
                 await call.message.answer("❌ Ошибка при создании счёта.")
                 return
 
             invoice = result['result']
-            invoice_url = invoice['pay_url']
-            invoice_id = invoice['invoice_id']
-
             kb = InlineKeyboardBuilder()
-            kb.button(text="💳 ОПЛАТИТЬ", url=invoice_url)
+            kb.button(text="💳 ОПЛАТИТЬ", url=invoice['pay_url'])
             kb.button(text="🔙 Назад", callback_data="kleinanzeigen")
             await call.message.answer(
                 f"💰 Покупка Germany x{qty}\n"
@@ -163,8 +127,41 @@ async def pay_crypto(call: types.CallbackQuery):
                 f"🧾 Комментарий к оплате: {unique_id}",
                 reply_markup=kb.as_markup()
             )
+            asyncio.create_task(wait_and_check_payment(invoice['invoice_id'], call.from_user.id, "Саморег Germany Number", 7, qty))
 
-            asyncio.create_task(wait_and_check_payment(invoice_id, call.from_user.id, "Саморег Germany Number", 7, qty))
+# === ОПЛАТА MANUAL ===
+@router.callback_query(F.data == "buy_manual")
+async def pay_manual(call: types.CallbackQuery):
+    amount = 200
+    unique_id = str(uuid.uuid4())[:7]
+    payload = f"{call.from_user.id}:manual:{unique_id}"
+
+    async with aiohttp.ClientSession() as session:
+        headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+        json_data = {
+            "asset": "USDT",
+            "amount": str(amount),
+            "description": f"Покупка: Обход фрода (ID: {unique_id})",
+            "hidden_message": "Спасибо за покупку!",
+            "payload": payload
+        }
+        async with session.post(f"{CRYPTO_API_URL}/createInvoice", headers=headers, json=json_data) as resp:
+            result = await resp.json()
+            if "result" not in result:
+                await call.message.answer("❌ Ошибка при создании счёта.")
+                return
+
+            invoice = result['result']
+            kb = InlineKeyboardBuilder()
+            kb.button(text="💳 ОПЛАТИТЬ", url=invoice['pay_url'])
+            kb.button(text="🔙 Назад", callback_data="manuals")
+            await call.message.answer(
+                f"💰 Покупка: Обход фрода Kleinanzeigen\n"
+                f"💵 Сумма: 200$\n"
+                f"🧾 Комментарий к оплате: {unique_id}",
+                reply_markup=kb.as_markup()
+            )
+            asyncio.create_task(wait_and_check_payment(invoice['invoice_id'], call.from_user.id, "Обход фрода Kleinanzeigen", 200, 1))
 
 # === ПРОВЕРКА ОПЛАТЫ ===
 async def wait_and_check_payment(invoice_id, user_id, product_name, price, quantity):
@@ -176,7 +173,7 @@ async def wait_and_check_payment(invoice_id, user_id, product_name, price, quant
             if result.get("result"):
                 invoice = result["result"][0]
                 if invoice.get("status") == "paid":
-                    async with aiosqlite.connect("users.db") as db:
+                    async with aiosqlite.connect(DB_PATH) as db:
                         await db.execute("""
                             INSERT INTO purchases (user_id, product, price, quantity)
                             VALUES (?, ?, ?, ?)
@@ -186,7 +183,7 @@ async def wait_and_check_payment(invoice_id, user_id, product_name, price, quant
 # === ПРОФИЛЬ ===
 @router.callback_query(F.data == "profile")
 async def profile(call: types.CallbackQuery):
-    async with aiosqlite.connect("users.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT product, price, quantity FROM purchases WHERE user_id = ?", (call.from_user.id,))
         rows = await cursor.fetchall()
 
@@ -201,13 +198,12 @@ async def profile(call: types.CallbackQuery):
     kb.button(text="🔙 Назад", callback_data="back_to_main")
     await call.message.edit_text(text, reply_markup=kb.as_markup())
 
-# === ИНФОРМАЦИЯ ===
+# === ИНФО ===
 @router.callback_query(F.data == "info")
-async def show_info(call: types.CallbackQuery):
-    text = "<b>ℹ️ Поддержка бота:</b>\nЕсли возникли вопросы — пишите: @dmitriyutkjn"
+async def info(call: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="back_to_main")
-    await call.message.edit_text(text, reply_markup=kb.as_markup())
+    await call.message.edit_text("Поддержка бота — @dmitriyutkjn", reply_markup=kb.as_markup())
 
 # === НАЗАД ===
 @router.callback_query(F.data == "back_to_main")
